@@ -279,7 +279,7 @@ class RLHFFlow(PRM):
 
 class QWenMath(PRM):
     def load_model_and_tokenizer(self) -> tuple[PreTrainedModel, PreTrainedTokenizer]:
-        model_id = "Qwen/Qwen2.5-Math-PRM-7B"
+        model_id = self.search_config.prm_path
         tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True)
         # For batched inference
         tokenizer.pad_token = tokenizer.eos_token
