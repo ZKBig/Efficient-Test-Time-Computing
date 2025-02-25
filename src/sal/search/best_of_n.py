@@ -81,7 +81,11 @@ def best_of_n(x, config: Config, llm: LLM, prm: PRM):
         if len(c) != config.n:
             raise ValueError(f"Generated {len(c)} completions instead of {config.n}")
 
-    scores = prm.score(x["problem"], completions)
+    if "Math" in config.prm_path:
+        scores = prm.score(config.system_prompt, x["problem"], completions)
+    else:
+        scores = prm.score(x["problem"], completions)
+
     agg_scores = [
         [aggregate_scores(s, config.agg_strategy) for s in score] for score in scores
     ]
