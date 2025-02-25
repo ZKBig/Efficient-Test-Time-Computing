@@ -18,6 +18,7 @@ from itertools import accumulate
 import torch
 from transformers import (
     AutoModelForCausalLM,
+    AutoModel,
     AutoTokenizer,
     PreTrainedModel,
     PreTrainedTokenizer,
@@ -30,10 +31,10 @@ from sal.models.skywork_o1_prm.io_utils import (
     prepare_input,
 )
 from sal.models.skywork_o1_prm.prm_model import SkyworkPRMModel
+import torch.nn.functional as F
 
 CANDIDATE_TOKENS = [648, 387]
 STEP_TAG_ID = 12902
-
 
 def batched_math_shepherd_inference(
     model: PreTrainedModel,
@@ -276,6 +277,64 @@ class RLHFFlow(PRM):
 
         return reshaped_output_scores
 
+class QWenMath(PRM):
+    def load_model_and_tokenizer(self) -> tuple[PreTrainedModel, PreTrainedTokenizer]:
+        model_id = "Qwen/Qwen2.5-Math-PRM-7B"
+        tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True)
+        # For batched inference
+        tokenizer.pad_token = tokenizer.eos_token
+        model = AutoModel.from_pretrained(
+            model_id,
+            device_map="auto",
+            torch_dtype=torch.float16,
+            trust_remote_code=True,
+        ).eval()
+        return model, tokenizer
+
+    def make_step_rewards(self, logits, token_masks):
+        probabilities = F.softmax(logits, dim=-1)
+        probabilities = probabilities * token_masks.unsqueeze(-1) 
+        
+        all_scores_res = []
+        for i in range(probabilities.size(0)):
+            sample = probabilities[i] 
+            positive_probs = sample[sample != 0].view(-1, 2)[:, 1] 
+            non_zero_elements_list = positive_probs.cpu().tolist()
+            all_scores_res.append(non_zero_elements_list)
+        return all_scores_res
+        
+    def score(
+            self, system_prompt: str, questions: list[str], outputs: list[list[str]]
+    ) -> list[list[float]]:
+        conversations = []
+        for question, answers in zip(questions, outputs, strict=True):
+            for ans in answers:
+                ans_list = ans.split("\n\n")
+                messages = [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": question},
+                    {"role": "assistant", "content": "<extra_0>".join(ans_list) + "<extra_0>"},
+                ]
+                conversation_str = self.tokenizer.apply_chat_template(
+                    messages, 
+                    tokenize=False, 
+                    add_generation_prompt=False
+                )
+                conversations.append(conversation_str)
+
+        output_scores = []
+        for i in range(0, len(conversations), self.search_config.prm_batch_size):
+            convs_batch = conversations[i : i + self.search_config.prm_batch_size]
+            inputs_batch = self.tokenizer(convs_batch, return_tensors="pt", padding=True, truncation=False).to(self.model.device)
+
+            with torch.no_grad():
+                outputs = self.model(**inputs_batch)
+                step_sep_id = self.tokenizer.encode("<extra_0>")[0]
+                token_masks = (inputs_batch.input_ids == step_sep_id)
+                step_rewards = self.make_step_rewards(outputs[0], token_masks)
+                output_scores.append(step_rewards)
+
+        return output_scores
 
 class SkyworkO1(PRM):
     @classmethod
@@ -323,7 +382,6 @@ class SkyworkO1(PRM):
             all_scores.append(all_step_scores)
         return all_scores
 
-
 class SkyworkO1_1_5B(SkyworkO1):
     def load_model_and_tokenizer(
         self, **model_kwargs
@@ -352,5 +410,8 @@ def load_prm(config: Config) -> PRM:
 
     if config.prm_path == "Skywork/Skywork-o1-Open-PRM-Qwen-2.5-7B":
         return SkyworkO1_7B(config)
+
+    if config.prm_path == "Qwen/Qwen2.5-Math-PRM-7B":
+        return QWenMath(config)
 
     raise NotImplementedError(f"PRM {config.prm_path} not implemented")
