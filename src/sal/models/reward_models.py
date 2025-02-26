@@ -328,13 +328,24 @@ class QWenMath(PRM):
             inputs_batch = self.tokenizer(convs_batch, return_tensors="pt", padding=True, truncation=False).to(self.model.device)
 
             with torch.no_grad():
-                outputs = self.model(**inputs_batch)
+                prm_outputs = self.model(**inputs_batch)
                 step_sep_id = self.tokenizer.encode("<extra_0>")[0]
                 token_masks = (inputs_batch.input_ids == step_sep_id)
-                step_rewards = self.make_step_rewards(outputs[0], token_masks)
-                output_scores.append(step_rewards)
+                step_rewards = self.make_step_rewards(prm_outputs[0], token_masks)
+                output_scores += step_rewards
 
-        return output_scores
+        reshaped_output_scores = []
+        counter = 0
+
+        for question, answers in zip(questions, outputs):
+            scores = []
+            for answer in answers:
+                scores.append(output_scores[counter])
+                counter += 1
+            
+            reshaped_output_scores.append(scores)
+            
+        return reshaped_output_scores
 
 class SkyworkO1(PRM):
     @classmethod
@@ -412,6 +423,9 @@ def load_prm(config: Config) -> PRM:
         return SkyworkO1_7B(config)
 
     if config.prm_path == "Qwen/Qwen2.5-Math-PRM-7B":
+        return QWenMath(config)
+
+    if config.prm_path == "Qwen/Qwen2.5-Math-PRM-72B":
         return QWenMath(config)
 
     raise NotImplementedError(f"PRM {config.prm_path} not implemented")
